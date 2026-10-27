@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Electrical HUD</title>
+<style>
+:root{--ink:#06090c;--panel:rgba(6,9,12,.8);--signal:#f5d90a;--scan:#2ef2ff;--alert:#ff3d7f;--text:#e8f1f5;--muted:#8fa3ad}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--ink);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;overflow:hidden}
+button{font:inherit;color:inherit;border:1px solid var(--signal);background:rgba(245,217,10,.12);border-radius:6px;padding:12px 14px;min-height:44px}
+button:focus-visible{outline:2px solid var(--scan);outline-offset:2px}
+button:active{background:rgba(245,217,10,.35)}
+#intro{position:fixed;inset:0;display:flex;flex-direction:column;justify-content:center;gap:18px;padding:max(24px,env(safe-area-inset-top)) 24px max(24px,env(safe-area-inset-bottom));max-width:460px;margin:auto}
+#intro h1{margin:0;font-size:2rem;color:var(--signal);letter-spacing:.01em}
+#intro p{margin:0;color:var(--muted);line-height:1.5}
+#intro .warn{border-left:3px solid var(--alert);padding-left:12px;color:var(--text)}
+#go{background:var(--signal);color:var(--ink);font-weight:700;font-size:1.1rem}
+#hud{display:none}
+video{position:fixed;inset:0;width:100%;height:100%;object-fit:cover}
+.shade{position:fixed;inset:0;background:linear-gradient(rgba(6,9,12,.55),transparent 22%,transparent 45%,rgba(6,9,12,.7));pointer-events:none}
+#top{position:fixed;top:0;left:0;right:0;padding:calc(10px + env(safe-area-inset-top)) 14px 10px;display:flex;justify-content:space-between;gap:10px;font-size:.85rem;color:var(--scan)}
+#top .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--scan);margin-right:6px}
+.reticle{position:fixed;left:12%;right:12%;top:20%;height:26%;pointer-events:none;overflow:hidden}
+.reticle i{position:absolute;width:26px;height:26px;border:0 solid var(--scan)}
+.reticle i:nth-child(1){top:0;left:0;border-top-width:3px;border-left-width:3px}
+.reticle i:nth-child(2){top:0;right:0;border-top-width:3px;border-right-width:3px}
+.reticle i:nth-child(3){bottom:0;left:0;border-bottom-width:3px;border-left-width:3px}
+.reticle i:nth-child(4){bottom:0;right:0;border-bottom-width:3px;border-right-width:3px}
+.reticle.scanning::after{content:"";position:absolute;left:0;right:0;height:3px;background:var(--scan);box-shadow:0 0 14px var(--scan);animation:sweep 1.2s linear infinite}
+@keyframes sweep{from{top:0}to{top:100%}}
+@media (prefers-reduced-motion:reduce){.reticle.scanning::after{animation:none;top:50%}}
+#found{position:fixed;left:14px;right:14px;top:49%;font-size:.9rem;color:var(--text);background:var(--panel);border-left:3px solid var(--scan);padding:8px 10px;display:none;max-height:20%;overflow:auto}
+#sheet{position:fixed;left:0;right:0;bottom:0;background:var(--panel);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border-top:2px solid var(--signal);padding:12px 14px calc(12px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:10px}
+#chips{display:flex;gap:8px;overflow-x:auto;padding-bottom:2px}
+#chips button{flex:0 0 auto;padding:8px 12px;min-height:38px;font-size:.85rem;border-color:var(--muted);background:transparent}
+#chips button.on{border-color:var(--signal);background:rgba(245,217,10,.18)}
+#meta{font-size:.8rem;color:var(--muted)}
+#step{font-size:1.15rem;line-height:1.4;min-height:4.2em;max-height:30vh;overflow:auto}
+#step.safety{color:var(--alert)}
+.row{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px}
+.row button{padding:10px 4px;font-size:.9rem}
+#err{color:var(--alert)}
+</style>
+</head>
+<body>
+<section id="intro">
+  <h1>Electrical HUD</h1>
+  <p>Point your camera at a panel, label, or device. Read labels, get a step-by-step checklist, and control it by voice.</p>
+  <p class="warn">A reference aid for qualified electricians. It does not replace the code, your training, or lockout procedures. Verify circuits are dead with a rated tester before touching conductors.</p>
+  <button id="go">Start camera</button>
+  <p id="err"></p>
+</section>
+
+<main id="hud">
+  <video id="cam" playsinline muted autoplay></video>
+  <div class="shade"></div>
+  <div id="top"><span><span class="dot"></span><span id="status">Camera live</span></span><span id="mode">No checklist</span></div>
+  <div class="reticle" id="ret"><i></i><i></i><i></i><i></i></div>
+  <div id="found"></div>
+  <div id="sheet">
+    <div id="chips"></div>
+    <div id="meta"></div>
+    <div id="step">Choose a checklist, or tap Scan label to read a nameplate.</div>
+    <div class="row">
+      <button id="back">Back</button>
+      <button id="next">Next</button>
+      <button id="scan">Scan label</button>
+      <button id="mic">Voice</button>
+    </div>
+    <button id="sound">Read aloud: on</button>
+  </div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script>
+const SAFETY = "Safety first. De-energize and verify dead with a rated tester (test it on a known live source before and after), or follow your energized-work procedure.";
+const KB = [
+  {id:"panel", title:"Breaker panel", keys:["panel","breaker","main","load center","bus","amp","amps"], steps:[
+    "Read the panel label: main rating, voltage, and phase. Note manufacturer and model.",
+    "With the cover on, look for scorch marks, rust, or water around the enclosure.",
+    "Only if qualified and authorized, remove the dead front. Treat lugs and busbars as live.",
+    "Look for loose, discolored, or melted conductors and breakers.",
+    "Check that breaker size matches conductor size and that circuits are labeled.",
+    "Record findings and take photos for the job notes."]},
+  {id:"gfci", title:"GFCI / AFCI", keys:["gfci","afci","gfi","arc fault","ground fault","test reset"], steps:[
+    "Press Test. The device should trip. Press Reset to restore power.",
+    "If it will not trip or reset, check that line and load wires are not swapped.",
+    "Check downstream outlets that lost power; they connect to the load terminals.",
+    "Confirm wiring with an outlet tester, then use its GFCI test button.",
+    "If it trips repeatedly, unplug loads and look for moisture or a neutral-to-ground fault.",
+    "Replace the device if it fails to trip or reset with correct wiring."]},
+  {id:"outlet", title:"Dead outlet", keys:["outlet","receptacle","dead","no power","socket"], steps:[
+    "Check the breaker and any upstream GFCI for a trip.",
+    "Test the outlet with a plug-in tester or meter.",
+    "If dead, turn the circuit off, verify, and inspect terminals and back-stab connections.",
+    "Find the last working device on the circuit and check its connections.",
+    "Look for a loose neutral or hot at that device.",
+    "Restore power and retest."]},
+  {id:"switch", title:"Switch or light", keys:["switch","light","fixture","lamp","dimmer","bulb"], steps:[
+    "Replace the bulb or test the fixture to rule out the lamp.",
+    "With power on, check for voltage at the switch box using your tester.",
+    "Confirm the switch passes power: hot in, switched leg out.",
+    "Check that a neutral is present at the fixture and connections are tight.",
+    "Replace the switch or fixture if it still fails."]}
+];
+
+const $ = id => document.getElementById(id);
+let cur = null, idx = 0, speakOn = true;
+
+function setStatus(t){ $("status").textContent = t; }
+function say(t){
+  if(!speakOn || !window.speechSynthesis) return;
+  speechSynthesis.cancel();
+  speechSynthesis.speak(new SpeechSynthesisUtterance(t));
+}
+
+function load(id){
+  const kb = KB.find(k => k.id === id);
+  if(!kb) return;
+  cur = {title: kb.title, steps: [SAFETY, ...kb.steps]};
+  idx = 0;
+  $("mode").textContent = kb.title;
+  chips();
+  show();
+}
+function show(){
+  if(!cur) return;
+  $("meta").textContent = cur.title + ": step " + (idx + 1) + " of " + cur.steps.length;
+  $("step").textContent = cur.steps[idx];
+  $("step").className = idx === 0 ? "safety" : "";
+  say(cur.steps[idx]);
+}
+function next(){ if(cur && idx < cur.steps.length - 1){ idx++; show(); } }
+function back(){ if(cur && idx > 0){ idx--; show(); } }
+function chips(){
+  $("chips").innerHTML = "";
+  KB.forEach(k => {
+    const b = document.createElement("button");
+    b.textContent = k.title;
+    if(cur && cur.title === k.title) b.className = "on";
+    b.onclick = () => load(k.id);
+    $("chips").appendChild(b);
+  });
+}
+
+function findKb(text){
+  const t = text.toLowerCase();
+  return KB.filter(k => k.keys.some(w => t.includes(w)));
+}
+
+async function scan(){
+  const v = $("cam");
+  if(!v.videoWidth){ setStatus("Camera not ready"); return; }
+  if(!window.Tesseract){ setStatus("Label reader needs internet"); return; }
+  setStatus("Reading label");
+  $("ret").classList.add("scanning");
+  const scale = Math.min(1, 1400 / v.videoWidth);
+  const c = document.createElement("canvas");
+  c.width = v.videoWidth * scale; c.height = v.videoHeight * scale;
+  c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
+  try{
+    const r = await Tesseract.recognize(c, "eng");
+    const text = r.data.text.replace(/\s+/g, " ").trim();
+    const amps = [...text.matchAll(/(\d{2,4})\s?(?:A|AMP|AMPS)\b/gi)].map(m => m[1] + " A");
+    const volts = [...text.matchAll(/(\d{2,3}(?:\/\d{2,3})?)\s?(?:V|VAC|VOLTS)\b/gi)].map(m => m[1] + " V");
+    const hits = findKb(text);
+    const parts = [];
+    if(amps.length) parts.push("Amps: " + [...new Set(amps)].join(", "));
+    if(volts.length) parts.push("Volts: " + [...new Set(volts)].join(", "));
+    if(hits.length) parts.push("Likely: " + hits.map(h => h.title).join(", "));
+    $("found").style.display = "block";
+    $("found").textContent = parts.length ? parts.join("  |  ") : (text ? "Read: " + text.slice(0, 160) : "No text found. Move closer and hold steady.");
+    setStatus("Scan done");
+    if(hits.length && !cur) load(hits[0].id);
+  }catch(e){
+    $("found").style.display = "block";
+    $("found").textContent = "Scan failed. Check your connection and try again.";
+    setStatus("Scan failed");
+  }
+  $("ret").classList.remove("scanning");
+}
+
+function command(t){
+  t = t.toLowerCase();
+  setStatus("Heard: " + t);
+  if(/\b(next|continue)\b/.test(t)) return next();
+  if(/\b(back|previous)\b/.test(t)) return back();
+  if(/\b(repeat|again)\b/.test(t)) return show();
+  if(/\b(scan|read|label)\b/.test(t)) return scan();
+  const hit = findKb(t)[0];
+  if(hit) load(hit.id); else say("I did not catch that.");
+}
+
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+function listen(){
+  if(!SR){ setStatus("Voice not supported here"); return; }
+  const rec = new SR();
+  rec.lang = "en-US";
+  rec.onstart = () => setStatus("Listening");
+  rec.onresult = e => command(e.results[0][0].transcript);
+  rec.onerror = () => setStatus("Voice unavailable");
+  rec.start();
+}
+
+$("go").onclick = async () => {
+  try{
+    const s = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"}}, audio:false});
+    $("cam").srcObject = s;
+    $("intro").style.display = "none";
+    $("hud").style.display = "block";
+    chips();
+  }catch(e){
+    $("err").textContent = "Camera blocked. Allow camera access for this site in Safari settings, and open the page over https.";
+  }
+};
+$("next").onclick = next;
+$("back").onclick = back;
+$("scan").onclick = scan;
+$("mic").onclick = listen;
+$("sound").onclick = () => {
+  speakOn = !speakOn;
+  if(!speakOn && window.speechSynthesis) speechSynthesis.cancel();
+  $("sound").textContent = "Read aloud: " + (speakOn ? "on" : "off");
+};
+</script>
+</body>
+</html>
